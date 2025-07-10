@@ -238,67 +238,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return cartItems.reduce((count, item) => count + item.quantity, 0)
   }
 
-  const placeOrder = async (deliveryAddress: string, customerName: string, customerPhone: string) => {
-    if (!user || cartItems.length === 0) {
-      toast.error('Your cart is empty')
-      return
-    }
-
-    const totalAmount = getCartTotal()
-
-    // Create order with required fields
-    const { data: order, error: orderError } = await supabase
-      .from('orders')
-      .insert([{
-        user_id: user.id,
-        customer_name: customerName,
-        delivery_address: deliveryAddress,
-        customer_phone: customerPhone,
-        total_amount: totalAmount,
-        status: 'Pending'
-      }])
-      .select()
-      .single()
-
-    if (orderError) {
-      console.error('Order creation error:', orderError)
-      toast.error('Failed to place order')
-      return
-    }
-
-    // Create order items
-    const orderItems = cartItems.map(item => ({
-      order_id: order.id,
-      product_id: item.product_id,
-      quantity: item.quantity,
-      price: item.product?.price || 0
-    }))
-
-    const { error: itemsError } = await supabase
-      .from('order_items')
-      .insert(orderItems)
-
-    if (itemsError) {
-      console.error('Order items creation error:', itemsError)
-      toast.error('Failed to create order items')
-      return
-    }
-
-    // Clear cart
-    const { error: clearError } = await supabase
-      .from('cart_items')
-      .delete()
-      .eq('user_id', user.id)
-
-    if (clearError) {
-      console.error('Cart clear error:', clearError)
-      toast.error('Failed to clear cart')
-      return
-    }
-
-    toast.success('Order placed successfully!')
-    await refreshCart()
+  const placeOrder = async (
+  deliveryAddress: string,
+  customerName: string,
+  customerPhone: string,
+  itemsForOrder: any[] // Pass the definitive list of items here
+) => {
+  if (!user || !itemsForOrder || itemsForOrder.length === 0) {
+    console.error("placeOrder called with no user or no items.");
+    return;
   }
+
+  // Recalculate total based on the passed items to be 100% sure
+  const totalAmount = itemsForOrder.reduce((sum, item) => {
+    const price = item.product?.price || 0;
+    return sum + price * item.quantity;
+  }, 0);
+
+  // Create the order
+  const { data: orderData, error: orderError } = await supabase
+    .from('orders')
+    .insert({
+      user_id: user.id,
+      total_amount: totalAmount,
+      status: 'Pending',
+      delivery_address: deliveryAddress,
+      customer_name: customerName,
+      customer_phone: customerPhone,
+    })
+    .select()
+    .single();
+
+  if (orderError) {
+    console.error("Error creating order:", orderError);
+    toast.error("Could not create your order.");
+    throw orderError;
+  }
+
+  // THIS IS THE FIX: Use the 'itemsForOrder' argument, not the stale state
+  const orderItems = itemsForOrder.map(item => ({
+    order_id: orderData.id,
+    product_id: item.product.id, // Ensure you are using the correct id property
+    quantity: item.quantity,
+    price: item.product?.price || 0,
+  }));
+
+  const { error: itemsError } = await supabase.from('order_items').insert(orderItems);
+
+  if (itemsError) {
+    console.error("Error creating order items:", itemsError);
+    // Optional: Attempt to delete the created order to avoid dangling orders
+    await supabase.from('orders').delete().eq('id', orderData.id);
+    toast.error("Could not save items for your order.");
+    throw itemsError;
+  }
+
+  // Clear the user's cart in the database
+  await supabase.from('cart_items').delete().eq('user_id', user.id);
+
+  // Refresh the UI
+  await refreshCart();
+
+  toast.success(`Order #${orderData.id} placed successfully!`);
+};
 
   const value = {
     user,
